@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Private Chat with Video Call</title>
+    <style>
+        #video-container {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 20px;
+        }
+        video {
+            width: 300px;
+            height: auto;
+            border: 1px solid black;
+        }
+    </style>
+</head>
+<body>
+    <div>
+        <label for="name">Your Name:</label>
+        <input id="name" />
+        <button id="join">Join Chat</button>
+    </div>
+    <div>
+        <label for="recipient">Recipient:</label>
+        <select id="recipient" disabled></select>
+        <button id="call">Video Call</button>
+    </div>
+    <ul id="messages"></ul>
+    <form id="form">
+        <input id="input" autocomplete="off" /><button>Send</button>
+    </form>
+    
+    <div id="video-container" style="display:none;">
+        <video id="localVideo" autoplay muted></video>
+        <video id="remoteVideo" autoplay></video>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const recipientSelect = document.getElementById('recipient');
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const videoContainer = document.getElementById('video-container');
+
+        let localPeerConnection;
+        let remotePeerConnection;
+
+        document.getElementById('join').addEventListener('click', function() {
+            const name = document.getElementById('name').value;
+            if (name) {
+                socket.emit('join', name);
+                document.getElementById('form').style.display = 'block';
+                document.getElementById('name').disabled = true;
+                document.getElementById('join').disabled = true;
+                recipientSelect.disabled = false;
+            }
+        });
+
+        const form = document.getElementById('form');
+        const input = document.getElementById('input');
+        const messages = document.getElementById('messages');
+
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            const recipientName = recipientSelect.value;
+            if (input.value && recipientName) {
+                const msg = input.value;
+                socket.emit('private message', { recipientName, message: msg });
+                displayMessage(`You: ${msg}`, 'sent');
+                input.value = '';
+                input.focus();
+            }
+        });
+
+        socket.on('private message', ({ message, senderName }) => {
+            displayMessage(`${senderName}: ${message}`, 'received');
+        });
+
+        document.getElementById('call').addEventListener('click', async function() {
+            const recipientName = recipientSelect.value;
+            if (recipientName) {
+                await startVideoCall(recipientName);
+            }
+        });
+
+        async function startVideoCall(recipientName) {
+            localPeerConnection = new RTCPeerConnection();
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = stream;
+
+            stream.getTracks().forEach(track => localPeerConnection.addTrack(track, stream));
+
+            localPeerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.emit('ice candidate', { candidate: event.candidate, to: recipientName });
+                }
+            };
+
+            const offer = await localPeerConnection.createOffer();
+            await localPeerConnection.setLocalDescription(offer);
+            socket.emit('video offer', { offer, to: recipientName });
+            videoContainer.style.display = 'flex';
+        }
+
+        socket.on('video offer', async ({ offer, from }) => {
+            remotePeerConnection = new RTCPeerConnection();
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = stream;
+
+            stream.getTracks().forEach(track => remotePeerConnection.addTrack(track, stream));
+
+            await remotePeerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+
+            const answer = await remotePeerConnection.createAnswer();
+            await remotePeerConnection.setLocalDescription(answer);
+            socket.emit('video answer', { answer, to: from });
+
+            remotePeerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.emit('ice candidate', { candidate: event.candidate, to: from });
+                }
+            };
+
+            remotePeerConnection.ontrack = event => {
+                remoteVideo.srcObject = event.streams[0];
+            };
+
+            videoContainer.style.display = 'flex';
+        });
+
+        socket.on('video answer', async ({ answer }) => {
+            await localPeerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        });
+
+        socket.on('ice candidate', async ({ candidate }) => {
+            if (remotePeerConnection) {
+                await remotePeerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            }
+        });
+
+        socket.on('update user list', function(userList) {
+            recipientSelect.innerHTML = ''; // Clear current options
+            userList.forEach(user => {
+                const option = document.createElement('option');
+                option.value = user;
+                option.textContent = user;
+                recipientSelect.appendChild(option);
+            });
+        });
+
+        function displayMessage(msg, type) {
+            const item = document.createElement('li');
+            item.textContent = msg;
+            item.classList.add(type);
+            messages.appendChild(item);
+            window.scrollTo(0, document.body.scrollHeight);
+        }
+    </script>
+</body>
+</html>
